@@ -5,6 +5,8 @@ class ChordMath:
 
     @staticmethod
     def in_interval(start, key, end, inclusive=True):
+        if start == end:
+            return False
         if start < end:
             return (start < key <= end) if inclusive else (start < key < end)
         else:
