@@ -1,49 +1,107 @@
+from typing import Optional, TYPE_CHECKING
+from config.LoggingConfig import get_logger
 from utils.ChordMath import ChordMath
+from .NodeRef import RemoteNode, NodeRef
+
+if TYPE_CHECKING:
+    from .ChordNode import ChordNode
+
+logger = get_logger("TopologyManager")
+
 
 class TopologyManager:
-
-    def __init__(self, node):
+    def __init__(self, node: 'ChordNode'):
         self.node = node
-        self.successor = node
-        self.predecessor = None
+        self.successor: Optional['RemoteNode'] = None
+        self.predecessor: Optional['RemoteNode'] = None
+        self.successor = self._create_remote(node.id, node.ip, node.port)
 
-    def join(self, bootstrap_node):
-        if bootstrap_node is self.node:
-            self.successor = self.node
-            self.predecessor = self.node
-        else:
-            self.successor = bootstrap_node.topology_manager.find_successor(self.node.id)
+    def _create_remote(self, node_id: int, ip: str, port: int) -> 'RemoteNode':
+        return RemoteNode(node_id, ip, port, self.node.ip, self.node.port)
 
-    def find_successor(self, node_id):
-        current_node = self.node
-        count = 0
-        while True:
-            if ChordMath.in_interval(current_node.id, node_id, current_node.topology_manager.successor.id):
-                return current_node.topology_manager.successor
-            n0 = current_node.topology_manager.closest_preceding_node(node_id)
-            if n0 is current_node:
-                return current_node.topology_manager.successor
-            current_node = n0
-            count += 1
-            if count > 100:
-                raise Exception("Hop limit exceeded")
+    async def find_successor(self, key_id: int) -> Optional['RemoteNode']:
+        if self.successor and ChordMath.in_interval(self.node.id, key_id, self.successor.id):
+            return self.successor
+        closest = await self.closest_preceding_node(key_id)
+        if closest.id == self.node.id:
+            return self.successor
+        try:
+            return await closest.find_successor(key_id)
+        except Exception as e:
+            logger.error(f"Error in find_successor for {key_id}: {e}")
+            return self.successor
 
-    def closest_preceding_node(self, node_id):
-        return self.node.finger_table.closest_preceding_node(node_id)
+    async def closest_preceding_node(self, key_id: int) -> 'RemoteNode':
+        closest = self.node.finger_table.closest_preceding_node(key_id)
+        if closest.id != self.node.id:
+            try:
+                if await closest.ping():
+                    return closest
+            except OSError:
+                pass
+        if self.successor and self.successor.id != self.node.id:
+            if ChordMath.in_interval(self.node.id, self.successor.id, key_id, inclusive=False):
+                return self.successor
+        return self._create_remote(self.node.id, self.node.ip, self.node.port)
 
-    def notify(self, potential_predecessor):
-        if (self.predecessor is None or
-                ChordMath.in_interval(self.predecessor.id, potential_predecessor.id, self.node.id)):
-            self.predecessor = potential_predecessor
+    async def stabilize(self) -> None:
+        if not self.successor:
+            logger.warning("No successor during stabilize")
+            return
+        try:
+            x = await self.successor.get_predecessor()
+            if x and x.id != self.node.id:
+                should_update = (
+                    self.successor.id == self.node.id or
+                    ChordMath.in_interval(self.node.id, x.id, self.successor.id, inclusive=False)
+                )
+                if should_update:
+                    logger.info(f"Updating successor: {self.successor.id} -> {x.id}")
+                    self.successor = self._create_remote(x.id, x.ip, x.port)
+            self_ref = self._create_remote(self.node.id, self.node.ip, self.node.port)
+            await self.successor.notify(self_ref)
 
-    def stabilize(self):
-        x = self.successor.topology_manager.predecessor
-        if x and ChordMath.in_interval(self.node.id, x.id, self.successor.id):
-            self.successor = x
-        self.successor.topology_manager.notify(self.node)
+        except Exception as e:
+            logger.error(f"Error during stabilize: {e}")
+            await self._handle_successor_failure()
 
-    def get_successor(self):
+    async def notify(self, node_ref: 'NodeRef') -> None:
+        should_update = (
+            not self.predecessor or
+            self.predecessor.id == self.node.id or
+            ChordMath.in_interval(self.predecessor.id, node_ref.id, self.node.id, inclusive=False)
+        )
+        if should_update and node_ref.id != self.node.id:
+            old_pred = self.predecessor.id if self.predecessor else None
+            self.predecessor = self._create_remote(node_ref.id, node_ref.ip, node_ref.port)
+            logger.info(f"Updating predecessor: {old_pred} -> {node_ref.id}")
+
+    async def check_predecessor(self) -> None:
+        if self.predecessor:
+            try:
+                if not await self.predecessor.ping():
+                    logger.warning(f"Predecessor {self.predecessor.id} unreachable")
+                    self.predecessor = None
+            except Exception as e:
+                logger.error(f"Error during predecessor check: {e}")
+                self.predecessor = None
+
+    async def _handle_successor_failure(self) -> None:
+        logger.warning(f"Successor node failure {self.successor.id}")
+        for finger in self.node.finger_table.fingers:
+            if finger and finger.id != self.node.id:
+                try:
+                    if await finger.ping():
+                        logger.info(f"New successor found: {finger.id}")
+                        self.successor = finger
+                        return
+                except OSError:
+                    continue
+        logger.warning("No successor detected, falling back to self")
+        self.successor = self._create_remote(self.node.id, self.node.ip, self.node.port)
+
+    async def get_successor(self) -> Optional['RemoteNode']:
         return self.successor
 
-    def get_predecessor(self):
+    async def get_predecessor(self) -> Optional['RemoteNode']:
         return self.predecessor
