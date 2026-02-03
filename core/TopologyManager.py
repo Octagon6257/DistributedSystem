@@ -17,6 +17,7 @@ class TopologyManager:
         self.predecessor: Optional['RemoteNode'] = None
         self.successor_list: List['RemoteNode'] = []
         self.successor = self._create_remote(node.id, node.ip, node.port)
+        self._successor_recovery_lock = asyncio.Lock()
 
     def _create_remote(self, node_id: int, ip: str, port: int) -> 'RemoteNode':
         return RemoteNode(node_id, ip, port, self.node.ip, self.node.port)
@@ -72,7 +73,7 @@ class TopologyManager:
 
         except Exception as e:
             logger.error(f"Error during stabilize: {e}")
-            await self._handle_successor_failure()
+            await self.handle_successor_failure()
 
     async def _update_successor_list(self) -> None:
         try:
@@ -119,30 +120,36 @@ class TopologyManager:
                 logger.error(f"Error during predecessor check: {e}")
                 self.predecessor = None
 
-    async def _handle_successor_failure(self) -> None:
-        logger.warning(f"Successor node failure {self.successor.id}")
-        for suc in self.successor_list[1:]:
-            if suc and suc.id != self.node.id:
-                try:
-                    if await suc.ping():
-                        logger.info(f"New successor from list: {suc.id}")
-                        self.successor = suc
-                        self.successor_list = [s for s in self.successor_list if s.id != self.successor.id]
-                        return
-                except OSError:
-                    continue
-        for finger in self.node.finger_table.fingers:
-            if finger and finger.id != self.node.id:
-                try:
-                    if await finger.ping():
-                        logger.info(f"New successor from fingers: {finger.id}")
-                        self.successor = finger
-                        return
-                except OSError:
-                    continue
-        logger.warning("No successor detected, falling back to self")
-        self.successor = self._create_remote(self.node.id, self.node.ip, self.node.port)
-        self.successor_list = []
+    async def handle_successor_failure(self) -> None:
+        async with self._successor_recovery_lock:
+            if not self.successor:
+                return
+
+            old_successor_id = self.successor.id
+            logger.warning(f"Handling successor failure for node {old_successor_id % 1000 if old_successor_id is not None else None}")
+            for suc in self.successor_list[1:]:
+                if suc and suc.id != self.node.id:
+                    try:
+                        if await suc.ping():
+                            logger.info(f"New successor from successor_list: {suc.id % 1000 if suc.id is not None else None}")
+                            self.successor = suc
+                            self.successor_list = [s for s in self.successor_list if s.id != self.successor.id]
+                            return
+                    except OSError:
+                        continue
+            for finger in self.node.finger_table.fingers:
+                if finger and finger.id != self.node.id and finger.id != old_successor_id:
+                    try:
+                        if await finger.ping():
+                            logger.info(f"New successor from finger table: {finger.id % 1000 if finger.id is not None else None}")
+                            self.successor = finger
+                            self.successor_list = []
+                            return
+                    except OSError:
+                        continue
+            logger.warning("No successor detected, falling back to self")
+            self.successor = self._create_remote(self.node.id, self.node.ip, self.node.port)
+            self.successor_list = []
 
     async def get_successor(self) -> Optional['RemoteNode']:
         return self.successor
