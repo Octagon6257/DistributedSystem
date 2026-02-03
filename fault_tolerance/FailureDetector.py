@@ -11,11 +11,11 @@ logger = get_logger("FailureDetector")
 
 class FailureDetector:
 
-
     def __init__(self, node: 'ChordNode'):
         self.node = node
         self.running = False
         self._task: Optional[asyncio.Task] = None
+        self._recovery_task: Optional[asyncio.Task] = None
         self.successor_failures = 0
         self.predecessor_failures = 0
 
@@ -33,6 +33,13 @@ class FailureDetector:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        if self._recovery_task and not self._recovery_task.done():
+            self._recovery_task.cancel()
+            try:
+                await self._recovery_task
+            except asyncio.CancelledError:
+                pass
+
         logger.info("Failure detector stopped")
 
     async def _monitor_loop(self) -> None:
@@ -53,7 +60,7 @@ class FailureDetector:
             self.successor_failures = 0
             return
         try:
-            alive = await asyncio.wait_for(successor.ping(),timeout=FailureDetectorSettings.TIMEOUT)
+            alive = await asyncio.wait_for(successor.ping(), timeout=FailureDetectorSettings.TIMEOUT)
             if alive:
                 if self.successor_failures > 0:
                     logger.info(f"Successor {successor.id} back online")
@@ -69,10 +76,15 @@ class FailureDetector:
     def _handle_successor_failure(self) -> None:
         self.successor_failures += 1
         successor = self.node.topology_manager.successor
-        logger.warning(f"Successor {successor.id} not responding \n" f"(Attempt {self.successor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
+        logger.warning(
+            f"Successor {successor.id} not responding \n" f"(Attempt {self.successor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
+
         if self.successor_failures >= FailureDetectorSettings.FAILURE_THRESHOLD:
             logger.error(f"Successor {successor.id} declared dead")
-            asyncio.create_task(self._find_new_successor())
+            if self._recovery_task and not self._recovery_task.done():
+                self._recovery_task.cancel()
+            self._recovery_task = asyncio.create_task(self._find_new_successor())
+
             self.successor_failures = 0
 
     async def _find_new_successor(self) -> None:
@@ -86,8 +98,9 @@ class FailureDetector:
                         logger.info(f"Found new successor: {finger.id}")
                         self.node.topology_manager.successor = finger
                         return
-                except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+                except (asyncio.TimeoutError, ConnectionRefusedError, OSError, Exception):
                     continue
+
         logger.warning("No successor found, self-referencing")
         from core.NodeRef import RemoteNode
         self.node.topology_manager.successor = RemoteNode(self.node.id, self.node.ip, self.node.port, self.node.ip,self.node.port)
@@ -98,7 +111,7 @@ class FailureDetector:
             self.predecessor_failures = 0
             return
         try:
-            alive = await asyncio.wait_for(predecessor.ping(),timeout=FailureDetectorSettings.TIMEOUT)
+            alive = await asyncio.wait_for(predecessor.ping(), timeout=FailureDetectorSettings.TIMEOUT)
             if alive:
                 if self.predecessor_failures > 0:
                     logger.info(f"Predecessor {predecessor.id} back online")

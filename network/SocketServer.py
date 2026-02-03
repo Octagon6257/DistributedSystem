@@ -76,6 +76,10 @@ class SocketServer:
                 result = await self._node.store(payload['key'], payload['value'])
                 return {'status': 'ok' if result else 'error'}
 
+            elif cmd == "STORE_REPLICA":
+                result = await self._node.store_replica(payload['key'], payload['value'])
+                return {'status': 'ok' if result else 'error'}
+
             elif cmd == "GET_KEY":
                 val = await self._node.get(payload['key'])
                 return {'value': val}

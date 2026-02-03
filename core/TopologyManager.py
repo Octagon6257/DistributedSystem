@@ -1,4 +1,5 @@
-from typing import Optional, TYPE_CHECKING
+import asyncio
+from typing import Optional, List, TYPE_CHECKING
 from config.LoggingConfig import get_logger
 from utils.ChordMath import ChordMath
 from .NodeRef import RemoteNode, NodeRef
@@ -20,8 +21,12 @@ class TopologyManager:
         return RemoteNode(node_id, ip, port, self.node.ip, self.node.port)
 
     async def find_successor(self, key_id: int) -> Optional['RemoteNode']:
+        if self.successor and self.successor.id == self.node.id:
+            return self.successor
+
         if self.successor and ChordMath.in_interval(self.node.id, key_id, self.successor.id):
             return self.successor
+            
         closest = await self.closest_preceding_node(key_id)
         if closest.id == self.node.id:
             return self.successor
@@ -50,13 +55,14 @@ class TopologyManager:
             return
         try:
             x = await self.successor.get_predecessor()
+            logger.debug(f"stabilize: my successor {self.successor.port} has predecessor {x.port if x else None}")
             if x and x.id != self.node.id:
                 should_update = (
                     self.successor.id == self.node.id or
                     ChordMath.in_interval(self.node.id, x.id, self.successor.id, inclusive=False)
                 )
                 if should_update:
-                    logger.info(f"Updating successor: {self.successor.id} -> {x.id}")
+                    logger.info(f"Updating successor: {self.successor.port} -> {x.port}")
                     self.successor = self._create_remote(x.id, x.ip, x.port)
             self_ref = self._create_remote(self.node.id, self.node.ip, self.node.port)
             await self.successor.notify(self_ref)
@@ -105,3 +111,28 @@ class TopologyManager:
 
     async def get_predecessor(self) -> Optional['RemoteNode']:
         return self.predecessor
+
+    async def get_successor_list(self, count: int) -> List['RemoteNode']:
+        successors = []
+        seen_ids = {self.node.id}
+        current = self.successor
+
+        while len(successors) < count and current and current.id not in seen_ids:
+            if not self.node.running: break
+
+            seen_ids.add(current.id)
+            successors.append(current)
+
+            try:
+                next_successor = await current.get_successor()
+                if next_successor and next_successor.id not in seen_ids:
+                    current = self._create_remote(next_successor.id, next_successor.ip, next_successor.port)
+                else:
+                    break
+            except (OSError, asyncio.TimeoutError):
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in get_successor_list: {e}")
+                break
+
+        return successors

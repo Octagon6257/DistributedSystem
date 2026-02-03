@@ -2,41 +2,55 @@ import asyncio
 import random
 
 from core.ChordNode import ChordNode
-from core.NodeRef import RemoteNode
 from network.SocketServer import SocketServer
 from network.MessageProtocol import MessageProtocol
 from config.LoggingConfig import setup_logging
 from config.Settings import ChordSettings, SecuritySettings
+from fault_tolerance.FailureDetector import FailureDetector
 
 logger = setup_logging()
 
 
 async def maintenance_loop(node: ChordNode) -> None:
-    while True:
-        try:
+    logger.info("Maintenance loop started")
+    try:
+        while True:
+            if not node.running:
+                break
+
             await asyncio.sleep(random.uniform(1, ChordSettings.STABILIZE_INTERVAL))
-            await node.topology_manager.stabilize()
-            await node.finger_table.fix_fingers()
-            await node.topology_manager.check_predecessor()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
+            await node.stabilize()
+
+            await asyncio.sleep(ChordSettings.FIX_FINGERS_INTERVAL)
+            await node.fix_fingers()
+
+            await asyncio.sleep(ChordSettings.CHECK_PREDECESSOR_INTERVAL)
+            await node.check_predecessor()
+
+    except asyncio.CancelledError:
+        logger.info("Maintenance loop cancelled")
+        return
+    except Exception as e:
+        if node.running:
             logger.error(f"Maintenance loop error: {e}")
 
 
 async def status_loop(node: ChordNode) -> None:
-    while True:
-        try:
+    try:
+        while True:
+            if not node.running: break
             await asyncio.sleep(10)
             status = node.get_status()
+            successor = status['successor'] % 1000 if status['successor'] else None
+            pred = status['predecessor'] % 1000 if status['predecessor'] else None
             logger.info(
                 f"STATUS [:{node.port}] ID:{node.id % 1000} | "
-                f"Suc:{status['successor'] % 1000} | Pred:{status['predecessor'] % 1000} | Keys:{status['keys_count']}"
+                f"Successor:{successor} | Pred:{pred} | Keys:{status['keys_count']}"
             )
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Status loop error: {e}")
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logger.error(f"Status loop error: {e}")
 
 
 async def run_node(host: str, port: int, bootstrap_ip=None, bootstrap_port=None) -> None:
@@ -50,22 +64,34 @@ async def run_node(host: str, port: int, bootstrap_ip=None, bootstrap_port=None)
     await asyncio.sleep(0.5)
 
     if bootstrap_ip and bootstrap_port:
-        bootstrap_node = RemoteNode(0, bootstrap_ip, bootstrap_port, host, port)
-        await node.join(bootstrap_node)
+        await node.join(bootstrap_ip, bootstrap_port)
     else:
-        await node.join(None)
+        await node.create_ring()
+
+    failure_detector = FailureDetector(node)
+    await failure_detector.start()
 
     maintenance_task = asyncio.create_task(maintenance_loop(node))
     status_task = asyncio.create_task(status_loop(node))
+
     logger.info(f"Chord node {node.id} running on {host}:{port}")
 
     try:
         while True:
             await asyncio.sleep(3600)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
+    except asyncio.CancelledError:
+        logger.info(f"Stopping node {port}...")
     finally:
+        await node.stop()
+        await failure_detector.stop()
         maintenance_task.cancel()
         status_task.cancel()
-        server_task.cancel()
         await server.stop()
+        await asyncio.gather(maintenance_task, status_task, return_exceptions=True)
+
+        if not server_task.done():
+            server_task.cancel()
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                pass

@@ -104,3 +104,9 @@ class RemoteNode(NodeRef):
 
     async def ping(self) -> bool:
             return await self.rpc.ping(self.ip, self.port)
+
+    async def store_replica(self, key: str, value: Any) -> bool:
+            result = await self.rpc.send_request(
+                self.ip, self.port, "STORE_REPLICA", {'key': key, 'value': value}
+            )
+            return result is not None and result.get('status') == 'ok'
