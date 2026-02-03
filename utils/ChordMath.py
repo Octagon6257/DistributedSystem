@@ -7,7 +7,10 @@ class ChordMath:
     @staticmethod
     def in_interval(start: int, key: int, end: int, inclusive: bool = True) -> bool:
         if start == end:
-            return False
+            if inclusive:
+                return key == start
+            else:
+                return False
         if start < end:
             if inclusive:
                 return start < key <= end

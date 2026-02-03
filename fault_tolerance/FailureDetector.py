@@ -16,6 +16,7 @@ class FailureDetector:
         self.running = False
         self._task: Optional[asyncio.Task] = None
         self._recovery_task: Optional[asyncio.Task] = None
+        self._recovery_lock = asyncio.Lock()
         self.successor_failures = 0
         self.predecessor_failures = 0
 
@@ -63,7 +64,7 @@ class FailureDetector:
             alive = await asyncio.wait_for(successor.ping(), timeout=FailureDetectorSettings.TIMEOUT)
             if alive:
                 if self.successor_failures > 0:
-                    logger.info(f"Successor {successor.id} back online")
+                    logger.info(f"Successor {successor.id % 1000 if successor.id is not None else None} back online")
                 self.successor_failures = 0
             else:
                 self._handle_successor_failure()
@@ -77,15 +78,18 @@ class FailureDetector:
         self.successor_failures += 1
         successor = self.node.topology_manager.successor
         logger.warning(
-            f"Successor {successor.id} not responding \n" f"(Attempt {self.successor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
+            f"Successor {successor.id % 1000 if successor.id is not None else None} not responding \n" f"(Attempt {self.successor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
 
         if self.successor_failures >= FailureDetectorSettings.FAILURE_THRESHOLD:
-            logger.error(f"Successor {successor.id} declared dead")
-            if self._recovery_task and not self._recovery_task.done():
-                self._recovery_task.cancel()
-            self._recovery_task = asyncio.create_task(self._find_new_successor())
-
+            logger.error(f"Successor {successor.id % 1000 if successor.id is not None else None} declared dead")
+            asyncio.create_task(self._safe_find_new_successor())
             self.successor_failures = 0
+
+    async def _safe_find_new_successor(self) -> None:
+        async with self._recovery_lock:
+            if self._recovery_task and not self._recovery_task.done():
+                return
+            self._recovery_task = asyncio.create_task(self._find_new_successor())
 
     async def _find_new_successor(self) -> None:
         logger.info("Searching for a new successor...")
@@ -95,7 +99,7 @@ class FailureDetector:
                 tried_ids.add(finger.id)
                 try:
                     if await asyncio.wait_for(finger.ping(), timeout=FailureDetectorSettings.TIMEOUT):
-                        logger.info(f"Found new successor: {finger.id}")
+                        logger.info(f"Found new successor: {finger.id % 1000 if finger.id is not None else None}")
                         self.node.topology_manager.successor = finger
                         return
                 except (asyncio.TimeoutError, ConnectionRefusedError, OSError, Exception):
@@ -114,7 +118,7 @@ class FailureDetector:
             alive = await asyncio.wait_for(predecessor.ping(), timeout=FailureDetectorSettings.TIMEOUT)
             if alive:
                 if self.predecessor_failures > 0:
-                    logger.info(f"Predecessor {predecessor.id} back online")
+                    logger.info(f"Predecessor {predecessor.id % 1000 if predecessor.id is not None else None} back online")
                 self.predecessor_failures = 0
             else:
                 self._handle_predecessor_failure()
@@ -127,8 +131,8 @@ class FailureDetector:
     def _handle_predecessor_failure(self) -> None:
         self.predecessor_failures += 1
         predecessor = self.node.topology_manager.predecessor
-        logger.warning(f"Predecessor {predecessor.id} not responding \n" f"(Attempt {self.predecessor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
+        logger.warning(f"Predecessor {predecessor.id % 1000 if predecessor.id is not None else None} not responding \n" f"(Attempt {self.predecessor_failures}/{FailureDetectorSettings.FAILURE_THRESHOLD})")
         if self.predecessor_failures >= FailureDetectorSettings.FAILURE_THRESHOLD:
-            logger.error(f"Predecessor {predecessor.id} declared dead")
+            logger.error(f"Predecessor {predecessor.id % 1000 if predecessor.id is not None else None} declared dead")
             self.node.topology_manager.predecessor = None
             self.predecessor_failures = 0

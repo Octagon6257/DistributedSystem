@@ -1,6 +1,7 @@
 import hmac
 import hashlib
 import json
+from base64 import urlsafe_b64encode
 from cryptography.fernet import Fernet
 from typing import Dict, Any, Tuple
 from config.LoggingConfig import get_logger
@@ -13,7 +14,6 @@ class MessageSecurity:
     def __init__(self, secret_key: str):
         self.secret_key = secret_key.encode('utf-8')
         key_material = hashlib.sha256(self.secret_key).digest()
-        from base64 import urlsafe_b64encode
         fernet_key = urlsafe_b64encode(key_material)
         self.cipher = Fernet(fernet_key)
 

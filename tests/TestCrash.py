@@ -70,13 +70,6 @@ async def run_crash_test():
 
         print("\n   Waiting for ring stabilization (15 seconds)...")
         await asyncio.sleep(15)
-        
-        print("\n   Checking node status...")
-        for node_id in [0, 1, 2]:
-            port = BASE_PORT + node_id
-            status = await rpc.send_request(HOST, port, "GET_STATUS", {})
-            if status:
-                print(f"   Node {port}: successor={status.get('successor', 'N/A')}, keys={status.get('keys_count', 0)}")
 
         print(f"\nPHASE 2: Storing data")
         test_data = {

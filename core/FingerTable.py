@@ -21,7 +21,7 @@ class FingerTable:
         return RemoteNode(node_id, ip, port, self.node.ip, self.node.port)
 
     async def initialize(self) -> None:
-        logger.info(f"Finger Table initialization for node: {self.node.id}")
+        logger.info(f"Finger Table initialization for node: {self.node.id % 1000 if self.node.id is not None else None}")
         for i in range(ChordSettings.M_BIT):
             start = (self.node.id + (2 ** i)) % ChordSettings.MODULUS
             finger = await self.node.topology_manager.find_successor(start)

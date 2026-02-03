@@ -19,7 +19,7 @@ class DataTransferManager:
             predecessor = await successor_node.get_predecessor()
             start_id = predecessor.id if predecessor else 0
             end_id = self.node_id
-            logger.info(f"Retrieving keys from a range ({start_id}, {end_id}]")
+            logger.info(f"Retrieving keys from a range ({start_id % 1000 if start_id is not None else None}, {end_id % 1000 if end_id is not None else None}]")
             keys_to_transfer = await successor_node.get_keys_in_range(start_id, end_id)
             if keys_to_transfer:
                 data = await successor_node.transfer_keys(keys_to_transfer)

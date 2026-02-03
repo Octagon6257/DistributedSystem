@@ -7,7 +7,7 @@ from core.TopologyManager import TopologyManager
 from core.DataTransferManager import DataTransferManager
 from utils.ChordMath import ChordMath
 from config.LoggingConfig import get_logger
-from config.Settings import ChordSettings
+from config.Settings import ChordSettings, NetworkSettings
 
 logger = get_logger("ChordNode")
 
@@ -23,12 +23,10 @@ class ChordNode(NodeRef):
         self.data_transfer_manager = DataTransferManager(self.data_store, self.id)
         self.replication_factor = ChordSettings.REPLICATION_FACTOR
         self.running = True
-        logger.info(f"Chord Node created: ID={self.id}, {ip}:{port}")
+        logger.info(f"Chord Node created: ID={self.id % 1000 if self.id is not None else None}, {ip}:{port}")
 
     async def stop(self):
-        """Stops the node logic immediately"""
         self.running = False
-        logger.info(f"Node {self.id} logic stopped")
 
     async def create_ring(self):
         if not self.running: return
@@ -41,7 +39,7 @@ class ChordNode(NodeRef):
             logger.info(f"Join to ring through bootstrap node {bootstrap_ip}:{bootstrap_port}")
             successor = await bootstrap_node.find_successor(self.id)
             if successor:
-                logger.info(f"Successor found: {successor.id}")
+                logger.info(f"Successor found: {successor.id % 1000 if successor.id is not None else None}")
                 self.topology_manager.successor = RemoteNode(
                     successor.id, successor.ip, successor.port, self.ip, self.port
                 )
@@ -146,13 +144,13 @@ class ChordNode(NodeRef):
 
             key_hash = ChordMath.compute_hash(key)
             try:
-                responsible_node = await asyncio.wait_for(self.topology_manager.find_successor(key_hash),timeout=2.0)
+                responsible_node = await asyncio.wait_for(self.topology_manager.find_successor(key_hash),timeout=NetworkSettings.TIMEOUT)
 
                 if responsible_node and responsible_node.id == self.id:
                     return None
 
                 if responsible_node:
-                    value = await asyncio.wait_for(responsible_node.get_key(key), timeout=1.0)
+                    value = await asyncio.wait_for(responsible_node.get_key(key), timeout=NetworkSettings.TIMEOUT)
                     if value is not None:
                         return value
             except (asyncio.TimeoutError, OSError):
@@ -183,7 +181,7 @@ class ChordNode(NodeRef):
             for node in unique_nodes:
                 if not self.running: return None
                 try:
-                    value = await asyncio.wait_for(node.get_key(key), timeout=0.8)
+                    value = await asyncio.wait_for(node.get_key(key), timeout=NetworkSettings.TIMEOUT)
                     if value is not None:
                         logger.info(f"Key '{key}' recovered from replica/finger at port {node.port}")
                         return value

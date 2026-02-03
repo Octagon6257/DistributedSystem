@@ -52,6 +52,8 @@ class SocketServer:
         payload = request.payload
         try:
             if cmd == "FIND_SUCCESSOR":
+                if 'id' not in payload:
+                    return {'error': 'missing_id'}
                 result_node = await self._node.topology_manager.find_successor(payload['id'])
                 return result_node.as_dict() if result_node else {'id': None}
 
@@ -73,14 +75,20 @@ class SocketServer:
                 return {'status': 'ok'}
 
             elif cmd == "STORE_KEY":
+                if 'key' not in payload or 'value' not in payload:
+                    return {'error': 'missing_key_or_value'}
                 result = await self._node.store(payload['key'], payload['value'])
                 return {'status': 'ok' if result else 'error'}
 
             elif cmd == "STORE_REPLICA":
+                if 'key' not in payload or 'value' not in payload:
+                    return {'error': 'missing_key_or_value'}
                 result = await self._node.store_replica(payload['key'], payload['value'])
                 return {'status': 'ok' if result else 'error'}
 
             elif cmd == "GET_KEY":
+                if 'key' not in payload:
+                    return {'error': 'missing_key'}
                 val = await self._node.get(payload['key'])
                 return {'value': val}
 

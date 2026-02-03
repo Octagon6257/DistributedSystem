@@ -15,6 +15,7 @@ class TopologyManager:
         self.node = node
         self.successor: Optional['RemoteNode'] = None
         self.predecessor: Optional['RemoteNode'] = None
+        self.successor_list: List['RemoteNode'] = []
         self.successor = self._create_remote(node.id, node.ip, node.port)
 
     def _create_remote(self, node_id: int, ip: str, port: int) -> 'RemoteNode':
@@ -26,7 +27,7 @@ class TopologyManager:
 
         if self.successor and ChordMath.in_interval(self.node.id, key_id, self.successor.id):
             return self.successor
-            
+
         closest = await self.closest_preceding_node(key_id)
         if closest.id == self.node.id:
             return self.successor
@@ -58,8 +59,8 @@ class TopologyManager:
             logger.debug(f"stabilize: my successor {self.successor.port} has predecessor {x.port if x else None}")
             if x and x.id != self.node.id:
                 should_update = (
-                    self.successor.id == self.node.id or
-                    ChordMath.in_interval(self.node.id, x.id, self.successor.id, inclusive=False)
+                        self.successor.id == self.node.id or
+                        ChordMath.in_interval(self.node.id, x.id, self.successor.id, inclusive=False)
                 )
                 if should_update:
                     logger.info(f"Updating successor: {self.successor.port} -> {x.port}")
@@ -67,26 +68,52 @@ class TopologyManager:
             self_ref = self._create_remote(self.node.id, self.node.ip, self.node.port)
             await self.successor.notify(self_ref)
 
+            await self._update_successor_list()
+
         except Exception as e:
             logger.error(f"Error during stabilize: {e}")
             await self._handle_successor_failure()
 
+    async def _update_successor_list(self) -> None:
+        try:
+            max_successors = self.node.replication_factor
+            new_list = []
+            seen_ids = {self.node.id}
+            current = self.successor
+
+            while len(new_list) < max_successors and current and current.id not in seen_ids:
+                seen_ids.add(current.id)
+                new_list.append(current)
+                try:
+                    next_suc = await current.get_successor()
+                    if next_suc and next_suc.id not in seen_ids:
+                        current = self._create_remote(next_suc.id, next_suc.ip, next_suc.port)
+                    else:
+                        break
+                except (OSError, asyncio.TimeoutError):
+                    break
+
+            self.successor_list = new_list
+            logger.debug(f"Successor list updated: {len(self.successor_list)} nodes")
+        except Exception as e:
+            logger.error(f"Error updating successor list: {e}")
+
     async def notify(self, node_ref: 'NodeRef') -> None:
         should_update = (
-            not self.predecessor or
-            self.predecessor.id == self.node.id or
-            ChordMath.in_interval(self.predecessor.id, node_ref.id, self.node.id, inclusive=False)
+                not self.predecessor or
+                self.predecessor.id == self.node.id or
+                ChordMath.in_interval(self.predecessor.id, node_ref.id, self.node.id, inclusive=False)
         )
         if should_update and node_ref.id != self.node.id:
             old_pred = self.predecessor.id if self.predecessor else None
             self.predecessor = self._create_remote(node_ref.id, node_ref.ip, node_ref.port)
-            logger.info(f"Updating predecessor: {old_pred} -> {node_ref.id}")
+            logger.info(f"Updating predecessor: {old_pred % 1000 if old_pred is not None else None} -> {node_ref.id % 1000 if node_ref is not None else None} ")
 
     async def check_predecessor(self) -> None:
         if self.predecessor:
             try:
                 if not await self.predecessor.ping():
-                    logger.warning(f"Predecessor {self.predecessor.id} unreachable")
+                    logger.warning(f"Predecessor {self.predecessor.id % 1000 if self.predecessor.id is not None else None} unreachable")
                     self.predecessor = None
             except Exception as e:
                 logger.error(f"Error during predecessor check: {e}")
@@ -94,17 +121,28 @@ class TopologyManager:
 
     async def _handle_successor_failure(self) -> None:
         logger.warning(f"Successor node failure {self.successor.id}")
+        for suc in self.successor_list[1:]:
+            if suc and suc.id != self.node.id:
+                try:
+                    if await suc.ping():
+                        logger.info(f"New successor from list: {suc.id}")
+                        self.successor = suc
+                        self.successor_list = [s for s in self.successor_list if s.id != self.successor.id]
+                        return
+                except OSError:
+                    continue
         for finger in self.node.finger_table.fingers:
             if finger and finger.id != self.node.id:
                 try:
                     if await finger.ping():
-                        logger.info(f"New successor found: {finger.id}")
+                        logger.info(f"New successor from fingers: {finger.id}")
                         self.successor = finger
                         return
                 except OSError:
                     continue
         logger.warning("No successor detected, falling back to self")
         self.successor = self._create_remote(self.node.id, self.node.ip, self.node.port)
+        self.successor_list = []
 
     async def get_successor(self) -> Optional['RemoteNode']:
         return self.successor
@@ -113,6 +151,8 @@ class TopologyManager:
         return self.predecessor
 
     async def get_successor_list(self, count: int) -> List['RemoteNode']:
+        if self.successor_list and len(self.successor_list) >= count:
+            return self.successor_list[:count]
         successors = []
         seen_ids = {self.node.id}
         current = self.successor

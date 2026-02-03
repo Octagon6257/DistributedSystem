@@ -74,7 +74,7 @@ async def run_node(host: str, port: int, bootstrap_ip=None, bootstrap_port=None)
     maintenance_task = asyncio.create_task(maintenance_loop(node))
     status_task = asyncio.create_task(status_loop(node))
 
-    logger.info(f"Chord node {node.id} running on {host}:{port}")
+    logger.info(f"Chord node {node.id % 1000 if node.id is not None else None} running on {host}:{port}")
 
     try:
         while True:
