@@ -58,13 +58,13 @@ class TopologyManager:
         try:
             x = await self.successor.get_predecessor()
             logger.debug(f"stabilize: my successor {self.successor.port} has predecessor {x.port if x else None}")
-            if x and x.id != self.node.id:
+            if x and x.id != self.node.id and x.id != self.successor.id:
                 should_update = (
                         self.successor.id == self.node.id or
                         ChordMath.in_interval(self.node.id, x.id, self.successor.id, inclusive=False)
                 )
                 if should_update:
-                    logger.info(f"Updating successor: {self.successor.port} -> {x.port}")
+                    logger.info(f"[Node {self.node.id % 1000}] Updating successor: {self.successor.id % 1000} -> {x.id % 1000}")
                     self.successor = self._create_remote(x.id, x.ip, x.port)
             self_ref = self._create_remote(self.node.id, self.node.ip, self.node.port)
             await self.successor.notify(self_ref)
@@ -133,7 +133,7 @@ class TopologyManager:
                         if await suc.ping():
                             logger.info(f"New successor from successor_list: {suc.id % 1000 if suc.id is not None else None}")
                             self.successor = suc
-                            self.successor_list = [s for s in self.successor_list if s.id != self.successor.id]
+                            self.successor_list = [s for s in self.successor_list if s.id != old_successor_id]
                             return
                     except OSError:
                         continue
