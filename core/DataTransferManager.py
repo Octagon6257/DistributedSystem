@@ -17,7 +17,7 @@ class DataTransferManager:
     async def acquire_keys_from_successor(self, successor_node: 'RemoteNode') -> int:
         try:
             predecessor = await successor_node.get_predecessor()
-            start_id = predecessor.id if predecessor else 0
+            start_id = predecessor.id if predecessor else successor_node.id
             end_id = self.node_id
             logger.info(f"Retrieving keys from a range ({start_id % 1000 if start_id is not None else None}, {end_id % 1000 if end_id is not None else None}]")
             keys_to_transfer = await successor_node.get_keys_in_range(start_id, end_id)
